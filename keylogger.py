@@ -184,7 +184,7 @@ class WindowTracker:
         try:
             result = subprocess.run(
                 [
-                    "xdtool",
+                    "xdotool",
                     "getactivewindow",
                     "getwindowname",
                 ],
